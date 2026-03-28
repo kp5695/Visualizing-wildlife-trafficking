@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<head>
+    <title>Wildlife Trafficking Choropleth Map</title>
+    
+    <script src="../lib/d3.v5.min.js"></script>
+    <script src="../lib/topojson.v2.min.js"></script>
+    <script src="../lib/d3-legend.min.js"></script>
+    <script src="../lib/d3-tip.min.js"></script>
+    <script src="../lib/d3-geo-projection.v2.min.js"></script>
+    
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .dropdown-container {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .dropdown-container label {
+            margin-right: 10px;
+            font-weight: bold;
+        }
+        
+        .dropdown-container select {
+            padding: 5px;
+            font-size: 14px;
+        }
+        
+        #choropleth {
+            display: block;
+        }
+        
+        .country {
+            stroke: #fff;
+            stroke-width: 0.5px;
+        }
+        
+        .country:hover {
+            stroke: #333;
+            stroke-width: 2px;
+        }
+        
+        .legend {
+            font-size: 12px;
+        }
+        
+        .username {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 14px;
+            color: #666;
+        }
+        
+        /* d3-tip tooltip styles */
+        .d3-tip {
+            line-height: 1.5;
+            padding: 12px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            border-radius: 4px;
+            pointer-events: none;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Wildlife Trafficking Incidents by Country</h1>
+    
+    <div class="dropdown-container">
+        <label for="yearDropdown">Select Year:</label>
+        <select id="yearDropdown"></select>
+    </div>
+
+    <script>
+        // code to define margin and dimensions for svg
+        const margin = {top: 20, right: 20, bottom: 20, left: 20};
+        const width = 960 - margin.left - margin.right;
+        const height = 600 - margin.top - margin.bottom;
+        
+        // code to create svg
+        const svg = d3.select("body")
+            .append("svg")
+            .attr("id", "choropleth")
+            .attr("width", width + margin.left + margin.right)
+            .attr("height", height + margin.top + margin.bottom)
+            .append("g")
+            .attr("transform", `translate(${margin.left}, ${margin.top})`);
+        
+        // code to create color scale (will be updated in createMapAndLegend)
+        let colorScale;
+        
+        // code to define tooltip using d3-tip
+        const tooltip = d3.tip()
+            .attr("id", "tooltip")
+            .attr("class", "d3-tip")
+            .offset([-10, 0])
+            .html(function(d) {
+                return d; // d will be the HTML string passed from mouseover
+            });
+        
+        svg.call(tooltip);
+        
+        // code to define projection and path required for Choropleth
+        var projection = d3.geoNaturalEarth1()
+            .scale(150)
+            .translate([width / 2, height / 2]);
+            
+        var path = d3.geoPath().projection(projection);
+
+        // define any other global variables 
+        let legendGroup;
+        let currentYear;
+        let traffickingDataMap = {};
+
+        Promise.all([
+            // code to read files
+            d3.json("data/world_countries.json"),
+            d3.csv("data/wildlife_trafficking.csv")
+        ]).then(
+            // code to call ready() with required arguments
+            function(data) {
+                ready(null, data[0], data[1]);
+            }
+        );
+        
+        // this function should be called once the data from files have been read
+        // world: topojson from world_countries.json
+        // traffickingData: data from wildlife_trafficking.csv
+        function ready(error, world, traffickingData) {
+            if (error) throw error;
+            
+            // enter code to extract required fields from traffickingData
+            // Get unique years and sort them
+            const years = [...new Set(traffickingData.map(d => d.Year))].sort((a, b) => a - b);
+            
+            // Create a map for quick lookup: year -> country -> data
+            traffickingData.forEach(d => {
+                if (!traffickingDataMap[d.Year]) {
+                    traffickingDataMap[d.Year] = {};
+                }
+                traffickingDataMap[d.Year][d["Country of Incident"]] = {
+                    incidents: d.Number_of_Incidents,
+                    avgFine: d.Average_Fine,
+                    avgImprisonment: d.Average_Imprisonment
+                };
+            });
+            
+            // code to append the years to the dropdown
+            const dropdown = d3.select("#yearDropdown");
+            dropdown.selectAll("option")
+                .data(years)
+                .enter()
+                .append("option")
+                .text(d => d)
+                .attr("value", d => d);
+            
+            // event listener for the dropdown. Update choropleth and legend when selection changes
+            dropdown.on("change", function() {
+                const selectedYear = this.value;
+                createMapAndLegend(world, traffickingData, selectedYear);
+            });
+            
+            // Choropleth with default option (first year)
+            createMapAndLegend(world, traffickingData, years[0]);
+        }
+
+
+        function createMapAndLegend(world, traffickingData, selectedYear) {
+            currentYear = selectedYear;
+            
+            // Filter data for selected year
+            const yearData = traffickingData.filter(d => d.Year === selectedYear);
+            
+            // Create a map of country to incident count
+            const incidentMap = {};
+            yearData.forEach(d => {
+                incidentMap[d["Country of Incident"]] = +d.Number_of_Incidents;
+            });
+            
+            // Get all incident values for the selected year to calculate quantiles
+            const incidentValues = yearData.map(d => +d.Number_of_Incidents);
+            
+            // Create quantile scale with 4 gradations
+            colorScale = d3.scaleQuantile()
+                .domain(incidentValues)
+                .range(["#fee5d9", "#fcae91", "#fb6a4a", "#cb181d"]);
+            
+            // Remove existing map elements
+            svg.selectAll("#countries").remove();
+            
+            // Create countries group
+            const countriesGroup = svg.append("g").attr("id", "countries");
+            
+            // Draw the map - world is already a GeoJSON FeatureCollection
+            countriesGroup.selectAll("path")
+                .data(world.features)
+                .enter()
+                .append("path")
+                .attr("class", "country")
+                .attr("d", path)
+                .attr("fill", d => {
+                    const countryName = d.properties.name;
+                    const incidents = incidentMap[countryName];
+                    return incidents ? colorScale(incidents) : "#ccc";
+                })
+                .on("mouseover", function(d) {
+                    const countryName = d.properties.name;
+                    const countryData = traffickingDataMap[currentYear] && traffickingDataMap[currentYear][countryName];
+                    
+                    let tooltipHTML = `<strong>${countryName}</strong><br/>`;
+                    tooltipHTML += `Year: ${currentYear}<br/>`;
+                    
+                    if (countryData) {
+                        const incidents = countryData.incidents || "N/A";
+                        const avgFine = countryData.avgFine ? parseFloat(countryData.avgFine).toFixed(2) : "N/A";
+                        const avgImprisonment = countryData.avgImprisonment ? parseFloat(countryData.avgImprisonment).toFixed(2) : "N/A";
+                        
+                        tooltipHTML += `Number of Incidents: ${incidents}<br/>`;
+                        tooltipHTML += `Average Fine (USD): ${avgFine}<br/>`;
+                        tooltipHTML += `Average Imprisonment (years): ${avgImprisonment}`;
+                    } else {
+                        tooltipHTML += `Number of Incidents: N/A<br/>`;
+                        tooltipHTML += `Average Fine (USD): N/A<br/>`;
+                        tooltipHTML += `Average Imprisonment (years): N/A`;
+                    }
+                    
+                    tooltip.show(tooltipHTML, this);
+                })
+                .on("mouseout", function() {
+                    tooltip.hide();
+                });
+            
+            // Remove existing legend
+            if (legendGroup) {
+                legendGroup.remove();
+            }
+            
+            // Create legend
+            legendGroup = svg.append("g")
+                .attr("id", "legend")
+                .attr("class", "legend")
+                .attr("transform", `translate(20, 50)`);
+            
+            // Get quantile thresholds
+            const quantiles = colorScale.quantiles();
+            const domain = colorScale.domain();
+            const minVal = d3.min(domain);
+            const maxVal = d3.max(domain);
+            
+            // Create legend labels with proper formatting
+            const legendLabels = [
+                `${minVal.toFixed(2)} - ${quantiles[0].toFixed(2)}`,
+                `${quantiles[0].toFixed(2)} - ${quantiles[1].toFixed(2)}`,
+                `${quantiles[1].toFixed(2)} - ${quantiles[2].toFixed(2)}`,
+                `${quantiles[2].toFixed(2)} - ${maxVal.toFixed(2)}`
+            ];
+            
+            // Use d3-legend
+            const legendScale = d3.scaleOrdinal()
+                .domain(legendLabels)
+                .range(colorScale.range());
+            
+            const legendOrdinal = d3.legendColor()
+                .shape("rect")
+                .shapeWidth(30)
+                .shapeHeight(20)
+                .scale(legendScale);
+            
+            legendGroup.call(legendOrdinal);
+        }
+    </script>
+    
+</body>
+
+</html>
