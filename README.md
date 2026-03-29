@@ -135,7 +135,3 @@ TopoJSON format containing world country boundaries and geographic data for map 
 Created as part of CSE6242 coursework - Data Visualization
 
 ---
-
-## License
-
-This project is provided for educational purposes.
